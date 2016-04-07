@@ -71,7 +71,7 @@ class ResourceTree(OrderedDict):
         self.language = language
 class StringArray(list): pass
 class Plurals(dict): pass
-Translation = namedtuple('Translation', ['text', 'comments', 'formatted'])
+Translation = namedtuple('Translation', ['text', 'context', 'comments', 'formatted'])
 
 
 def get_element_text(tag, name, warnfunc=dummy_warn):
@@ -365,6 +365,10 @@ def read_xml(xml_file, language=None, warnfunc=dummy_warn):
             comment = []
             continue
 
+        context = None
+        if 'tr-context' in tag.attrib:
+            context = tag.attrib.get('tr-context')
+
         if tag.tag == 'string':
             try:
                 text, formatted = get_element_text(tag, name, warnfunc)
@@ -372,7 +376,7 @@ def read_xml(xml_file, language=None, warnfunc=dummy_warn):
                 warnfunc('"%s" has been skipped, reason: %s' % (
                     name, e.reason), 'info')
             else:
-                translation = Translation(text, comment, formatted)
+                translation = Translation(text, context, comment, formatted)
                 result[name] = translation
 
         elif tag.tag == 'string-array':
@@ -401,7 +405,7 @@ def read_xml(xml_file, language=None, warnfunc=dummy_warn):
                               'the array will be incomplete') %
                                     (name, e.reason), 'warning')
                 else:
-                    translation = Translation(text, comment, formatted)
+                    translation = Translation(text, context, comment[:], formatted)
                     result[name].append(translation)
 
         elif tag.tag == 'plurals':
@@ -422,7 +426,7 @@ def read_xml(xml_file, language=None, warnfunc=dummy_warn):
                                   'the plural will be incomplete') %
                                  (name, e.reason), 'warning')
                     else:
-                        translation = Translation(text, comment, formatted)
+                        translation = Translation(text, context, comment, formatted)
                         result[name][quantity] = translation
 
         # We now have processed a tag. We either added those comments to
@@ -529,9 +533,13 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
                 if item.formatted:
                     flags.append('c-format')
 
-                ctx = "%s:%d" % (name, index)
-                catalog.add(item.text, item_trans, auto_comments=item.comments,
-                            flags=flags, context=ctx)
+                # Add android resource identifier as extracted comment
+                resource = "android-resource: %s:%d" % (name, index)
+                comments = item.comments[:]
+                comments.append(resource)
+
+                catalog.add(item.text, item_trans, auto_comments=comments,
+                            flags=flags, context=item.context)
 
         elif isinstance(org_value, Plurals):
             # a plurals, convert to a gettext plurals
@@ -560,6 +568,10 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
                     formatted = True
                 comments.extend(translation.comments)
 
+            # Add android resource string as comment
+            resource = "android-resource: %s" % name
+            comments.append(resource)
+
             # For the message id, choose any two plural forms, but prefer
             # "one" and "other", assuming an English master resource.
             temp = org_value.copy()
@@ -577,10 +589,12 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
             # We pick the quantities supported by the language (the rest
             # would be ignored by Android as well).
             msgstr = ''
+            context = None
             if trans_value:
                 allowed_keywords = translations.language.plural_keywords
                 msgstr = ['' for i in range(len(allowed_keywords))]
                 for quantity, translation in list(trans_value.items()):
+                    context = translation.context
                     try:
                         index = translations.language.plural_keywords.index(quantity)
                     except ValueError:
@@ -597,7 +611,7 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
             if formatted:
                 flags.append('c-format')
             catalog.add(msgid, tuple(msgstr), flags=flags,
-                        auto_comments=comments, context=name)
+                        auto_comments=comments, context=context)
 
         else:
             # a normal string
@@ -609,8 +623,12 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
             if org_value.formatted:
                 flags.append('c-format')
 
+            # Add android resource string as comment
+            resource = "android-resource: %s" % name
+            org_value.comments.append(resource)
+
             catalog.add(org_value.text, trans_value.text if trans_value else '',
-                        flags=flags, auto_comments=org_value.comments, context=name)
+                        flags=flags, auto_comments=org_value.comments, context=org_value.context)
 
     if translations is not None:
         # At this point, trans_strings only contains those for which
