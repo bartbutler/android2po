@@ -13,6 +13,7 @@ The process thus is:
 
 from __future__ import unicode_literals
 
+import re
 from itertools import chain
 from collections import namedtuple
 from lxml import etree
@@ -533,8 +534,8 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
                 if item.formatted:
                     flags.append('c-format')
 
-                # Add android resource identifier as extracted comment
-                resource = "android-resource: %s:%d" % (name, index)
+                # Add android tag and resource identifier as extracted comment
+                resource = "tag=android; resource=%s:%d" % (name, index)
                 comments = item.comments[:]
                 comments.append(resource)
 
@@ -569,7 +570,7 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
                 comments.extend(translation.comments)
 
             # Add android resource string as comment
-            resource = "android-resource: %s" % name
+            resource = "tag=android; resource=%s" % name
             comments.append(resource)
 
             # For the message id, choose any two plural forms, but prefer
@@ -624,7 +625,7 @@ def xml2po(resources, translations=None, resfilter=None, warnfunc=dummy_warn):
                 flags.append('c-format')
 
             # Add android resource string as comment
-            resource = "android-resource: %s" % name
+            resource = "tag=android; resource=%s" % name
             org_value.comments.append(resource)
 
             catalog.add(org_value.text, trans_value.text if trans_value else '',
@@ -804,15 +805,23 @@ def po2xml(catalog, with_untranslated=False, resfilter=None, warnfunc=dummy_warn
         plural_validation['done'] = True
 
     xml_tree = ResourceTree(getattr(catalog, 'language', None))
+
+    # Extract resource ids from comments
+    tag_re = re.compile("tag=android; resource=(.*)");
+
     for message in catalog:
         if not message.id:
             # This is the header
             continue
 
-        if not message.context:
-            warnfunc(('Ignoring message "%s": has no context; somebody other '+
-                      'than android2po seems to have added to this '+
-                      'catalog.') % message.id, 'error')
+        # if not message.context:
+        #     warnfunc(('Ignoring message "%s": has no context; somebody other '+
+        #               'than android2po seems to have added to this '+
+        #               'catalog.') % message.id, 'error')
+        #     continue
+
+        resource_ids = [tag_re.match(x).group(1) for x in message.auto_comments if tag_re.match(x)]
+        if len(resource_ids) < 1:
             continue
 
         if resfilter and resfilter(message):
@@ -821,54 +830,56 @@ def po2xml(catalog, with_untranslated=False, resfilter=None, warnfunc=dummy_warn
         # Both string and id will contain a tuple of this is a plural
         value = message.string or message.id
 
-        # A colon indicates a string array
-        if ':' in message.context:
-            # Collect all the strings of this array with their indices,
-            # so when we're done processing the whole catalog, we can
-            # sort by index and restore the proper array order.
-            name, index = message.context.split(':', 2)
-            index = int(index)
-            xml_tree.setdefault(name, StringArray())
-            while index >= len(xml_tree[name]):
-                xml_tree[name].append(None)  # fill None for missing indices
-            if xml_tree[name][index] is not None:
-                warnfunc(('Duplicate index %s in array "%s"; ignoring '+
-                          'the message. The catalog has possibly been '+
-                          'corrupted.') % (index, name), 'error')
-            xml_tree[name][index] = value
+        for resource_id in resource_ids:
 
-        # A plurals message
-        elif isinstance(message.string, tuple):
-            validate_plural_config()
+            # A colon indicates a string array
+            if ':' in resource_id:
+                # Collect all the strings of this array with their indices,
+                # so when we're done processing the whole catalog, we can
+                # sort by index and restore the proper array order.
+                name, index = resource_id.split(':', 2)
+                index = int(index)
+                xml_tree.setdefault(name, StringArray())
+                while index >= len(xml_tree[name]):
+                    xml_tree[name].append(None)  # fill None for missing indices
+                if xml_tree[name][index] is not None:
+                    warnfunc(('Duplicate index %s in array "%s"; ignoring '+
+                              'the message. The catalog has possibly been '+
+                              'corrupted.') % (index, name), 'error')
+                xml_tree[name][index] = value
 
-            # Untranslated: Do not include those even with with_untranslated
-            # is enabled - this is because even if we could put the plural
-            # definition from the master resource here, it wouldn't make
-            # sense in the context of another language. Instead, let access
-            # to the untranslated master version continue to work.
-            if not any(message.string):
-                continue
+            # A plurals message
+            elif isinstance(message.string, tuple):
+                validate_plural_config()
 
-            # We need to work with ``message.string`` directly rather than
-            # ``value``, since ``message.id`` will only be a 2-tuple made
-            # up of the msgid and msgid_plural definitions.
-            xml_tree[message.context] = Plurals([
-                (k, None) for k in catalog.language.plural_keywords])
-            for index, keyword in enumerate(catalog.language.plural_keywords):
-                # Assume each keyword matches one index.
-                try:
-                    xml_tree[message.context][keyword] = message.string[index]
-                except IndexError:
-                    # Plurals are not matching up, validate_plural_config()
-                    # has already raised a warning.
-                    break
+                # Untranslated: Do not include those even with with_untranslated
+                # is enabled - this is because even if we could put the plural
+                # definition from the master resource here, it wouldn't make
+                # sense in the context of another language. Instead, let access
+                # to the untranslated master version continue to work.
+                if not any(message.string):
+                    continue
 
-        # A standard string.
-        else:
-            if not message.string and not with_untranslated:
-                # Untranslated.
-                continue
-            xml_tree[message.context] = value
+                # We need to work with ``message.string`` directly rather than
+                # ``value``, since ``message.id`` will only be a 2-tuple made
+                # up of the msgid and msgid_plural definitions.
+                xml_tree[resource_id] = Plurals([
+                    (k, None) for k in catalog.language.plural_keywords])
+                for index, keyword in enumerate(catalog.language.plural_keywords):
+                    # Assume each keyword matches one index.
+                    try:
+                        xml_tree[resource_id][keyword] = message.string[index]
+                    except IndexError:
+                        # Plurals are not matching up, validate_plural_config()
+                        # has already raised a warning.
+                        break
+
+            # A standard string.
+            else:
+                if not message.string and not with_untranslated:
+                    # Untranslated.
+                    continue
+                xml_tree[resource_id] = value
 
     return xml_tree
 
